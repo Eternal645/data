@@ -5,13 +5,16 @@ SELECT ROW_NUMBER() OVER (ORDER BY m.type_order, m.name) AS "№",
 FROM (
     SELECT table_name AS name, 'Таблица' AS type, 1 AS type_order
     FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+    WHERE table_catalog = current_database()
+      AND table_schema = 'public' 
+      AND table_type = 'BASE TABLE'
 
     UNION ALL
 
     SELECT sequence_name, 'Последовательность', 2
     FROM information_schema.sequences
-    WHERE sequence_schema = 'public'
+    WHERE sequence_catalog = current_database()
+      AND sequence_schema = 'public'
 
     UNION ALL
 
@@ -24,7 +27,8 @@ FROM (
            END,
            3
     FROM information_schema.table_constraints
-    WHERE constraint_schema = 'public'
+    WHERE constraint_catalog = current_database()
+      AND constraint_schema = 'public'
       AND constraint_name NOT LIKE '%not_null'
 ) m
 ORDER BY 1;
