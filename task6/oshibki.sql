@@ -5,24 +5,21 @@ BEGIN
     DROP FUNCTION IF EXISTS meteo_vvvv(NUMERIC);
     DROP FUNCTION IF EXISTS meteo_bbbbtt(NUMERIC, NUMERIC);
     DROP TYPE IF EXISTS t_parametry;
+    DROP TABLE IF EXISTS parametry_pachek;
 
-    -- Расширение DDL: входные параметры и информация об ошибках
-    ALTER TABLE pachki ADD COLUMN IF NOT EXISTS meteo_height    NUMERIC;
-    ALTER TABLE pachki ADD COLUMN IF NOT EXISTS temperature     NUMERIC;
-    ALTER TABLE pachki ADD COLUMN IF NOT EXISTS pressure        NUMERIC;
-    ALTER TABLE pachki ADD COLUMN IF NOT EXISTS wind_direction  NUMERIC;
-    ALTER TABLE pachki ADD COLUMN IF NOT EXISTS wind_speed      NUMERIC;
-    ALTER TABLE pachki ADD COLUMN IF NOT EXISTS drift_range     NUMERIC;
-    ALTER TABLE pachki ADD COLUMN IF NOT EXISTS has_error       BOOLEAN NOT NULL DEFAULT FALSE;
-    ALTER TABLE pachki ADD COLUMN IF NOT EXISTS error_text      TEXT;
-    COMMENT ON COLUMN pachki.meteo_height   IS 'Высота метеопоста, м';
-    COMMENT ON COLUMN pachki.temperature    IS 'Температура, °C';
-    COMMENT ON COLUMN pachki.pressure       IS 'Давление, гПа';
-    COMMENT ON COLUMN pachki.wind_direction IS 'Направление ветра, °';
-    COMMENT ON COLUMN pachki.wind_speed     IS 'Скорость ветра, м/с';
-    COMMENT ON COLUMN pachki.drift_range    IS 'Дальность сноса пуль, м';
-    COMMENT ON COLUMN pachki.has_error      IS 'Флаг: в параметрах есть ошибка';
-    COMMENT ON COLUMN pachki.error_text     IS 'Описание ошибок параметров (через "; ")';
+    -- Расширение DDL: значения входных параметров пачек
+    CREATE TABLE parametry_pachek (
+        id           INTEGER PRIMARY KEY,
+        pachka_id    INTEGER NOT NULL REFERENCES pachki (id),
+        konstanta_id INTEGER NOT NULL REFERENCES konstanty_proverki (id),
+        value        NUMERIC NOT NULL,
+        CONSTRAINT uq_parametry_pachek UNIQUE (pachka_id, konstanta_id)
+    );
+    COMMENT ON TABLE parametry_pachek IS 'Значения входных параметров пачек';
+    COMMENT ON COLUMN parametry_pachek.id IS 'Идентификатор значения';
+    COMMENT ON COLUMN parametry_pachek.pachka_id IS 'Ссылка на пачку';
+    COMMENT ON COLUMN parametry_pachek.konstanta_id IS 'Ссылка на параметр (konstanty_proverki)';
+    COMMENT ON COLUMN parametry_pachek.value IS 'Значение параметра';
 
     -- Новый тип данных: список параметров
     CREATE TYPE t_parametry AS (
@@ -36,7 +33,7 @@ BEGIN
     );
     COMMENT ON TYPE t_parametry IS 'Список входных параметров пачки';
 
-    -- Функция проверки: на входе список параметров, на выходе строка со списком ошибок
+    -- Функция проверки: на входе список параметров, на выходе строка со списком ошибок.
     CREATE FUNCTION check_parametry(p t_parametry)
     RETURNS TEXT
     AS $func$
@@ -46,24 +43,27 @@ BEGIN
         d        t_diapazon;
     BEGIN
         IF p.equipment_type_id IS NULL THEN
-            v_errors := v_errors || 'Тип оборудования: не задан';
+            v_errors := v_errors || get_tekst_oshibki('EQUIPMENT_TYPE_NOT_SET');
         END IF;
 
         FOR r IN
-            SELECT * FROM (VALUES
-                ('HEIGHT',         'Высота метеопоста',  p.meteo_height),
-                ('TEMPERATURE',    'Температура',        p.temperature),
-                ('PRESSURE',       'Давление',           p.pressure),
-                ('WIND_DIRECTION', 'Направление ветра',  p.wind_direction),
-                ('WIND_SPEED',     'Скорость ветра',     p.wind_speed),
-                ('DRIFT_RANGE',    'Дальность сноса пуль', p.drift_range)
-            ) AS t(code, name, val)
+            SELECT k.code, k.name, v.val
+            FROM (VALUES
+                ('HEIGHT',         p.meteo_height),
+                ('TEMPERATURE',    p.temperature),
+                ('PRESSURE',       p.pressure),
+                ('WIND_DIRECTION', p.wind_direction),
+                ('WIND_SPEED',     p.wind_speed),
+                ('DRIFT_RANGE',    p.drift_range)
+            ) AS v(code, val)
+            JOIN konstanty_proverki k ON k.code = v.code
+            ORDER BY k.id
         LOOP
             d := get_diapazon(r.code);
             IF r.val IS NULL THEN
-                v_errors := v_errors || (r.name || ': не задано');
+                v_errors := v_errors || format(get_tekst_oshibki('NOT_SET'), r.name);
             ELSIF r.val < d.min_value OR r.val > d.max_value THEN
-                v_errors := v_errors || format('%s: значение %s вне диапазона от %s до %s',
+                v_errors := v_errors || format(get_tekst_oshibki('OUT_OF_RANGE'),
                                                r.name, r.val, d.min_value, d.max_value);
             END IF;
         END LOOP;
@@ -74,24 +74,24 @@ BEGIN
     COMMENT ON FUNCTION check_parametry(t_parametry)
         IS 'Проверяет параметры и возвращает строку со списком ошибок (пустая строка, если ошибок нет)';
 
-    -- Тестовые значения параметров
-    UPDATE pachki SET meteo_height = 150, temperature = 18, pressure = 1013,
-                      wind_direction = 270, wind_speed = 4, drift_range = 1200
-    WHERE code = 'PCH-001';
-    UPDATE pachki SET meteo_height = 220, temperature = 75, pressure = 650,
-                      wind_direction = 90, wind_speed = 7, drift_range = 800
-    WHERE code = 'PCH-002';
-    UPDATE pachki SET meteo_height = 80, temperature = -12, pressure = 995,
-                      wind_direction = 400, wind_speed = NULL, drift_range = 6000
-    WHERE code = 'PCH-003';
+    -- Тестовые данные: корректные и некорректные значения
+    INSERT INTO parametry_pachek (id, pachka_id, konstanta_id, value)
+    SELECT ROW_NUMBER() OVER (ORDER BY p.code, k.id), p.id, k.id, v.val
+    FROM (VALUES
+        ('PCH-001', 'HEIGHT',         150), ('PCH-001', 'TEMPERATURE',     18),
+        ('PCH-001', 'PRESSURE',      1013), ('PCH-001', 'WIND_DIRECTION', 270),
+        ('PCH-001', 'WIND_SPEED',       4), ('PCH-001', 'DRIFT_RANGE',   1200),
+        ('PCH-002', 'HEIGHT',         220), ('PCH-002', 'TEMPERATURE',     75),
+        ('PCH-002', 'PRESSURE',       650), ('PCH-002', 'WIND_DIRECTION',  90),
+        ('PCH-002', 'WIND_SPEED',       7), ('PCH-002', 'DRIFT_RANGE',    800),
+        ('PCH-003', 'HEIGHT',          80), ('PCH-003', 'TEMPERATURE',    -12),
+        ('PCH-003', 'PRESSURE',       995), ('PCH-003', 'WIND_DIRECTION', 400),
+        ('PCH-003', 'DRIFT_RANGE',   6000)
+    ) AS v(pcode, kcode, val)
+    JOIN pachki p ON p.code = v.pcode
+    JOIN konstanty_proverki k ON k.code = v.kcode;
 
-    -- Заполнение информации об ошибках
-    UPDATE pachki
-    SET error_text = check_parametry(ROW(tip_oborudovaniya_id, meteo_height, temperature,
-                                         pressure, wind_direction, wind_speed, drift_range)::t_parametry);
-    UPDATE pachki SET has_error = (error_text <> '');
-
-    -- Метео приближенный: ДДЧЧМ (день, час, десятки минут)
+    -- Метео приближенный: ДДЧЧМ
     CREATE FUNCTION meteo_ddchchm(p_datetime TIMESTAMP)
     RETURNS TEXT
     AS $func$
@@ -112,6 +112,7 @@ BEGIN
     $func$ LANGUAGE plpgsql;
     COMMENT ON FUNCTION meteo_vvvv(NUMERIC) IS 'Метео приближенный: группа ВВВВ';
 
+    -- Метео приближенный: ББББТТ (давление 4 цифры, температура 2 цифры; для минуса +50)
     CREATE FUNCTION meteo_bbbbtt(p_pressure NUMERIC, p_temperature NUMERIC)
     RETURNS TEXT
     AS $func$

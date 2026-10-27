@@ -1,10 +1,12 @@
 DO $$
 BEGIN
+    DROP FUNCTION IF EXISTS get_tekst_oshibki(TEXT);
     DROP FUNCTION IF EXISTS get_diapazon(TEXT);
     DROP TYPE IF EXISTS t_diapazon;
-    DROP TABLE IF EXISTS konstanty_proverki;
+    DROP TABLE IF EXISTS konstanty_oshibok CASCADE;
+    DROP TABLE IF EXISTS konstanty_proverki CASCADE;
 
-    -- Таблица констант
+    -- Таблица констант: допустимые диапазоны параметров
     CREATE TABLE konstanty_proverki (
         id         INTEGER PRIMARY KEY,
         code       VARCHAR(30)  UNIQUE NOT NULL,
@@ -26,6 +28,22 @@ BEGIN
         (4, 'WIND_DIRECTION', 'Направление ветра, °',      0,    359),
         (5, 'WIND_SPEED',     'Скорость ветра, м/с',      0,     50),
         (6, 'DRIFT_RANGE',    'Дальность сноса пуль, м',  0,   3000);
+
+    -- Таблица констант: тексты ошибок
+    CREATE TABLE konstanty_oshibok (
+        id       INTEGER PRIMARY KEY,
+        code     VARCHAR(30)  UNIQUE NOT NULL,
+        message  VARCHAR(200) NOT NULL
+    );
+    COMMENT ON TABLE konstanty_oshibok IS 'Тексты ошибок проверки параметров (шаблоны)';
+    COMMENT ON COLUMN konstanty_oshibok.id IS 'Идентификатор ошибки';
+    COMMENT ON COLUMN konstanty_oshibok.code IS 'Уникальный код ошибки';
+    COMMENT ON COLUMN konstanty_oshibok.message IS 'Шаблон текста ошибки (подстановки %s)';
+
+    INSERT INTO konstanty_oshibok (id, code, message) VALUES
+        (1, 'EQUIPMENT_TYPE_NOT_SET', 'Тип оборудования: не задан'),
+        (2, 'NOT_SET',                '%s: не задано'),
+        (3, 'OUT_OF_RANGE',           '%s: значение %s вне диапазона от %s до %s');
 
     -- Структура для хранения диапазона
     CREATE TYPE t_diapazon AS (
@@ -52,4 +70,22 @@ BEGIN
     END;
     $func$ LANGUAGE plpgsql;
     COMMENT ON FUNCTION get_diapazon(TEXT) IS 'Возвращает допустимый диапазон параметра по его коду';
+
+    -- Функция получения текста ошибки по коду
+    CREATE FUNCTION get_tekst_oshibki(p_code TEXT)
+    RETURNS TEXT
+    AS $func$
+    DECLARE
+        v_message TEXT;
+    BEGIN
+        SELECT message INTO v_message
+        FROM konstanty_oshibok
+        WHERE code = p_code;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Текст ошибки % не найден', p_code;
+        END IF;
+        RETURN v_message;
+    END;
+    $func$ LANGUAGE plpgsql;
+    COMMENT ON FUNCTION get_tekst_oshibki(TEXT) IS 'Возвращает шаблон текста ошибки по коду';
 END $$;
